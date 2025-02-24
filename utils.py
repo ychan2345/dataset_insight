@@ -6,32 +6,82 @@ from openai import OpenAI
 import os
 
 def get_column_stats(df: pd.DataFrame) -> Dict[str, Any]:
-    """Generate statistics for each column in the dataframe."""
+    """Generate statistics for each column in the dataframe.
+
+    For object columns:
+      - Clean values by stripping quotes and whitespace.
+      - Attempt to convert all non-missing values to datetime. 
+        If every non-missing value converts, treat as date.
+      - Otherwise, attempt to convert all non-missing values to numeric.
+        If every non-missing value converts, compute numeric summary statistics.
+      - Otherwise, treat as categorical.
+        If the number of distinct values exceeds 50, skip computing the full distribution.
+    """
     stats = {}
 
     for column in df.columns:
         col_series = df[column]
         column_type = str(col_series.dtype)
+        missing_count = int(col_series.isnull().sum())
         is_date = False
 
-        # Check if the column is already recognized as a datetime type
+        # If already a datetime type, flag as date.
         if pd.api.types.is_datetime64_any_dtype(col_series):
             is_date = True
-        # For object columns, attempt to convert to datetime
-        elif col_series.dtype == object:
-            converted = pd.to_datetime(col_series, errors='coerce', infer_datetime_format=True)
-            # If more than 80% of the values are successfully converted, treat as date
-            if converted.notna().mean() > 0.8:
-                is_date = True
 
+        # Process object columns
+        elif col_series.dtype == object:
+            # Clean the column: remove leading/trailing quotes and whitespace.
+            cleaned_series = col_series.apply(lambda x: x.strip(' "\'') if isinstance(x, str) else x)
+            # Work only on non-missing values.
+            non_missing = cleaned_series.dropna()
+
+            # Attempt to convert all non-missing values to datetime.
+            dt_converted = pd.to_datetime(non_missing, errors='coerce', infer_datetime_format=True)
+            if len(non_missing) > 0 and dt_converted.isna().sum() == 0:
+                is_date = True
+                # Optionally update missing_count from cleaned_series
+                missing_count = int(cleaned_series.isnull().sum())
+            else:
+                # Attempt to convert all non-missing values to numeric.
+                num_converted = pd.to_numeric(non_missing, errors='coerce')
+                if len(non_missing) > 0 and num_converted.isna().sum() == 0:
+                    stats[column] = {
+                        'type': column_type,
+                        'stats': {
+                            'mean': float(num_converted.mean()),
+                            'median': float(num_converted.median()),
+                            'std': float(num_converted.std())
+                        },
+                        'missing_count': int(cleaned_series.isnull().sum())
+                    }
+                    continue  # Skip to next column since stats are computed.
+                else:
+                    # Ambiguous values: treat as categorical.
+                    value_counts = cleaned_series.value_counts(dropna=True)
+                    if len(value_counts) > 50:
+                        stats[column] = {
+                            'type': column_type,
+                            'note': 'Too many distinct values; distribution skipped.',
+                            'missing_count': int(cleaned_series.isnull().sum())
+                        }
+                    else:
+                        stats[column] = {
+                            'type': column_type,
+                            'distribution': {str(k): int(v) for k, v in value_counts.to_dict().items()},
+                            'missing_count': int(cleaned_series.isnull().sum())
+                        }
+                    continue
+
+        # If flagged as date (either originally or via conversion), record note.
         if is_date:
             stats[column] = {
                 'type': column_type,
                 'note': 'Date column - no summary statistics computed',
-                'missing_count': int(col_series.isnull().sum())
+                'missing_count': missing_count
             }
+        # For numeric columns already in numeric dtype.
         elif np.issubdtype(col_series.dtype, np.number):
-            # Numerical column: compute only mean, median, and std (ignoring missing values)
             stats[column] = {
                 'type': column_type,
                 'stats': {
@@ -41,17 +91,21 @@ def get_column_stats(df: pd.DataFrame) -> Dict[str, Any]:
                 },
                 'missing_count': int(col_series.isnull().sum())
             }
+        # For any other cases, treat as categorical.
         else:
-            # Categorical column: compute distribution (value_counts ignores NaN by default)
-            value_counts = col_series.value_counts(dropna=True).to_dict()
-            stats[column] = {
-                'type': column_type,
-                'distribution': {
-                    str(k): int(v)
-                    for k, v in value_counts.items()
-                },
-                'missing_count': int(col_series.isnull().sum())
-            }
+            value_counts = col_series.value_counts(dropna=True)
+            if len(value_counts) > 50:
+                stats[column] = {
+                    'type': column_type,
+                    'note': 'Too many distinct values; distribution skipped.',
+                    'missing_count': int(col_series.isnull().sum())
+                }
+            else:
+                stats[column] = {
+                    'type': column_type,
+                    'distribution': {str(k): int(v) for k, v in value_counts.to_dict().items()},
+                    'missing_count': int(col_series.isnull().sum())
+                }
 
     return stats
 
@@ -99,7 +153,7 @@ Note: For each column, provide a confidence score between 0 and 1 indicating how
         elif 'distribution' in info:
             details = f"- {col} (Categorical):\n  Distribution: {info['distribution']}\n  Missing Values: {info['missing_count']}"
         else:
-            details = f"- {col} (Date):\n  Note: {info.get('note', '')}\n  Missing Values: {info['missing_count']}"
+            details = f"- {col} (Date or Other):\n  Note: {info.get('note', '')}\n  Missing Values: {info['missing_count']}"
         column_details.append(details)
 
     return prompt.format(rows=len(df),
@@ -125,7 +179,6 @@ def get_gpt_analysis(df: pd.DataFrame, stats: Dict[str, Any], api_key: str) -> D
             response_format={"type": "json_object"}
         )
 
-        # Parse the response and ensure all required fields exist
         analysis = json.loads(response.choices[0].message.content)
         return {
             "dataset_description": analysis.get("dataset_description", "No description available"),
