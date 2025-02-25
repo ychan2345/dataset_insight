@@ -94,7 +94,7 @@ def get_column_stats(df: pd.DataFrame) -> Dict[str, Any]:
         # For any other cases, treat as categorical.
         else:
             value_counts = col_series.value_counts(dropna=True)
-            if len(value_counts) > 50:
+            if len(value_counts) > 20:
                 stats[column] = {
                     'type': column_type,
                     'note': 'Too many distinct values; distribution skipped.',
