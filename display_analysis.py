@@ -28,6 +28,13 @@ def display_analysis():
     # Column Details Table with Export
     st.markdown("#### Column Details")
     if st.session_state.analysis["columns"]:
+        # Add confidence filter using radio buttons
+        confidence_filter = st.radio(
+            "Filter by confidence level:",
+            options=["All", "High confidence (>90%)", "Medium confidence (80-90%)", "Low confidence (<80%)"],
+            horizontal=True
+        )
+        
         column_data = {
             'Column Name': [],
             'Column Title': [],
@@ -73,9 +80,35 @@ def display_analysis():
             column_data['Confidence Score'].append(f"{get_confidence_indicator(confidence)} {confidence:.2%}")
             column_data['Column Description'].append(col['description'])
 
-        # Display the dataframe
+        # Create the dataframe
         column_df = pd.DataFrame(column_data)
-        st.dataframe(column_df, use_container_width=True)
+        
+        # Apply confidence filter based on selection
+        filtered_df = column_df.copy()
+        if confidence_filter != "All":
+            # Extract numeric confidence values (removing the emoji and % sign)
+            confidences = []
+            for conf_str in column_df['Confidence Score']:
+                # Extract numeric percentage value (format is "🟢 95.45%" or similar)
+                confidences.append(float(conf_str.split()[1].strip('%')) / 100)
+            
+            # Filter based on confidence thresholds
+            if confidence_filter == "High confidence (>90%)":
+                mask = [c > 0.9 for c in confidences]
+                filtered_df = column_df[mask]
+            elif confidence_filter == "Medium confidence (80-90%)":
+                mask = [(c >= 0.8) and (c <= 0.9) for c in confidences]
+                filtered_df = column_df[mask]
+            elif confidence_filter == "Low confidence (<80%)":
+                mask = [c < 0.8 for c in confidences]
+                filtered_df = column_df[mask]
+        
+        # Display filter results info
+        if confidence_filter != "All":
+            st.info(f"Showing {len(filtered_df)} columns with {confidence_filter}")
+        
+        # Display the filtered dataframe
+        st.dataframe(filtered_df, use_container_width=True)
 
         # Export Column Details
         st.download_button(
