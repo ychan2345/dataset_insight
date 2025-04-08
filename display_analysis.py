@@ -28,22 +28,6 @@ def display_analysis():
     # Column Details Table with Export
     st.markdown("#### Column Details")
     if st.session_state.analysis["columns"]:
-        # Add confidence filter using radio buttons
-        confidence_filter = st.radio(
-            "Filter by confidence level:",
-            options=["All", "High confidence (>90%)", "Medium confidence (80-90%)", "Low confidence (<80%)"],
-            horizontal=True
-        )
-        
-        column_data = {
-            'Column Name': [],
-            'Column Title': [],
-            'Data Type': [],
-            'Missing %': [],
-            'Confidence Score': [],
-            'Column Description': []
-        }
-
         # Get column metadata from summary_df if available
         column_metadata = {}
         if hasattr(st.session_state, 'summary_df') and 'Column Metadata' in st.session_state.summary_df.columns:
@@ -54,54 +38,60 @@ def display_analysis():
             except Exception as e:
                 st.warning(f"Could not parse column metadata: {str(e)}")
                 column_metadata = {"dtypes": {}, "missing_percentages": {}}
-
+        
+        # Create DataFrame directly from AI response
+        columns_data = []
         for col in st.session_state.analysis['columns']:
             column_name = col['name']
-            column_data['Column Name'].append(column_name)
-            column_data['Column Title'].append(col['title'])
+            confidence = col.get('confidence_score', 0)
+            confidence_numeric = confidence  # Store the raw numeric value for filtering
             
             # Get data type from stored metadata
             if column_metadata and "dtypes" in column_metadata and column_name in column_metadata["dtypes"]:
                 dtype = column_metadata["dtypes"].get(column_name, "Unknown")
             else:
-                # No fallbacks - we only use the stored metadata now
                 dtype = "Unknown"
-            column_data['Data Type'].append(dtype)
             
             # Get missing percentage from stored metadata
             if column_metadata and "missing_percentages" in column_metadata and column_name in column_metadata["missing_percentages"]:
                 missing_pct = column_metadata["missing_percentages"].get(column_name, 0)
-                column_data['Missing %'].append(f"{missing_pct:.2f}%")
+                missing_pct_str = f"{missing_pct:.2f}%"
             else:
-                # No fallbacks - we only use the stored metadata now
-                column_data['Missing %'].append("N/A")
-                
-            confidence = col.get('confidence_score', 0)
-            column_data['Confidence Score'].append(f"{get_confidence_indicator(confidence)} {confidence:.2%}")
-            column_data['Column Description'].append(col['description'])
-
-        # Create the dataframe
-        column_df = pd.DataFrame(column_data)
+                missing_pct_str = "N/A"
+            
+            # Add to the list of dictionaries
+            columns_data.append({
+                'Column Name': column_name,
+                'Column Title': col['title'],
+                'Data Type': dtype,
+                'Missing %': missing_pct_str,
+                'Confidence Score': f"{get_confidence_indicator(confidence)} {confidence:.2%}",
+                'Column Description': col['description'],
+                '_confidence_numeric': confidence_numeric  # Hidden column for filtering
+            })
+        
+        # Create DataFrame from the list of dictionaries
+        column_df = pd.DataFrame(columns_data)
+        
+        # Add confidence filter using radio buttons
+        confidence_filter = st.radio(
+            "Filter by confidence level:",
+            options=["All", "High confidence (>90%)", "Medium confidence (80-90%)", "Low confidence (<80%)"],
+            horizontal=True
+        )
         
         # Apply confidence filter based on selection
         filtered_df = column_df.copy()
         if confidence_filter != "All":
-            # Extract numeric confidence values (removing the emoji and % sign)
-            confidences = []
-            for conf_str in column_df['Confidence Score']:
-                # Extract numeric percentage value (format is "🟢 95.45%" or similar)
-                confidences.append(float(conf_str.split()[1].strip('%')) / 100)
-            
-            # Filter based on confidence thresholds
             if confidence_filter == "High confidence (>90%)":
-                mask = [c > 0.9 for c in confidences]
-                filtered_df = column_df[mask]
+                filtered_df = column_df[column_df['_confidence_numeric'] > 0.9]
             elif confidence_filter == "Medium confidence (80-90%)":
-                mask = [(c >= 0.8) and (c <= 0.9) for c in confidences]
-                filtered_df = column_df[mask]
+                filtered_df = column_df[(column_df['_confidence_numeric'] >= 0.8) & (column_df['_confidence_numeric'] <= 0.9)]
             elif confidence_filter == "Low confidence (<80%)":
-                mask = [c < 0.8 for c in confidences]
-                filtered_df = column_df[mask]
+                filtered_df = column_df[column_df['_confidence_numeric'] < 0.8]
+        
+        # Remove the hidden column used for filtering
+        filtered_df = filtered_df.drop('_confidence_numeric', axis=1)
         
         # Display filter results info
         if confidence_filter != "All":
@@ -110,10 +100,11 @@ def display_analysis():
         # Display the filtered dataframe
         st.dataframe(filtered_df, use_container_width=True)
 
-        # Export Column Details
+        # Export Column Details (full dataset, without the hidden confidence column)
+        export_df = column_df.drop('_confidence_numeric', axis=1)
         st.download_button(
             "Export Column Details (CSV)",
-            column_df.to_csv(index=False),
+            export_df.to_csv(index=False),
             "column_details.csv",
             "text/csv"
         )
