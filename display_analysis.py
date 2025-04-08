@@ -94,8 +94,11 @@ def display_analysis():
         if confidence_filter != "All":
             st.info(f"Showing {len(filtered_df)} columns with {confidence_filter}")
         
-        # Display the filtered DataFrame
-        st.dataframe(filtered_df, use_container_width=True)
+        # Display feedback if no rows match the filter
+        if filtered_df.empty:
+            st.info("No columns match the selected confidence filter.")
+        else:
+            st.dataframe(filtered_df, use_container_width=True)
         
         # Export the filtered DataFrame as CSV
         csv_data = filtered_df.to_csv(index=False).encode("utf-8")
