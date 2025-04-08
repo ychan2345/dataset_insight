@@ -369,7 +369,21 @@ def display_analysis():
 
     # Column Details Table with Export
     st.markdown("#### Column Details")
+    
+    # Add confidence filter above the table
     if st.session_state.analysis["columns"]:
+        # Filter options for confidence levels using radio buttons
+        confidence_filter = st.radio(
+            "Filter by Confidence Level:",
+            options=[
+                "All Columns",
+                "🟢 High Confidence (>90%)",
+                "🟡 Medium Confidence (80-90%)",
+                "🔴 Low Confidence (<80%)"
+            ],
+            horizontal=True  # Display radio buttons horizontally
+        )
+        
         column_data = {
             'Column Name': [],
             'Column Title': [],
@@ -391,46 +405,72 @@ def display_analysis():
                 column_metadata = {"dtypes": {}, "missing_percentages": {}}
 
         for col in st.session_state.analysis['columns']:
-            column_name = col['name']
-            column_data['Column Name'].append(column_name)
-            column_data['Column Title'].append(col['title'])
-            
-            # Get data type from stored metadata if available
-            if column_metadata and "dtypes" in column_metadata and column_name in column_metadata["dtypes"]:
-                dtype = column_metadata["dtypes"].get(column_name, "Unknown")
-            else:
-                # Fallback to directly accessing DataFrame
-                try:
-                    dtype = str(st.session_state.df[column_name].dtype) if column_name in st.session_state.df.columns else 'N/A'
-                except:
-                    dtype = 'Unknown'
-            column_data['Data Type'].append(dtype)
-            
-            # Get missing percentage from stored metadata if available
-            if column_metadata and "missing_percentages" in column_metadata and column_name in column_metadata["missing_percentages"]:
-                missing_pct = column_metadata["missing_percentages"].get(column_name, 0)
-                column_data['Missing %'].append(f"{missing_pct:.2f}%")
-            else:
-                # Fallback to directly calculating from DataFrame
-                try:
-                    missing_pct = st.session_state.df[column_name].isna().mean() * 100 if column_name in st.session_state.df.columns else 0
-                    column_data['Missing %'].append(f"{missing_pct:.2f}%")
-                except:
-                    column_data['Missing %'].append("N/A")
-                
+            # Get the confidence score for filtering
             confidence = col.get('confidence_score', 0)
-            column_data['Confidence Score'].append(f"{get_confidence_indicator(confidence)} {confidence:.2%}")
-            column_data['Column Description'].append(col['description'])
+            
+            # Apply confidence filter
+            should_include = True
+            if confidence_filter == "🟢 High Confidence (>90%)":
+                should_include = confidence >= 0.9
+            elif confidence_filter == "🟡 Medium Confidence (80-90%)":
+                should_include = 0.8 <= confidence < 0.9
+            elif confidence_filter == "🔴 Low Confidence (<80%)":
+                should_include = confidence < 0.8
+            
+            # Only include this column if it passes the confidence filter
+            if should_include:
+                column_name = col['name']
+                column_data['Column Name'].append(column_name)
+                column_data['Column Title'].append(col['title'])
+                
+                # Get data type from stored metadata if available
+                if column_metadata and "dtypes" in column_metadata and column_name in column_metadata["dtypes"]:
+                    dtype = column_metadata["dtypes"].get(column_name, "Unknown")
+                else:
+                    # Fallback to directly accessing DataFrame
+                    try:
+                        dtype = str(st.session_state.df[column_name].dtype) if column_name in st.session_state.df.columns else 'N/A'
+                    except:
+                        dtype = 'Unknown'
+                column_data['Data Type'].append(dtype)
+                
+                # Get missing percentage from stored metadata if available
+                if column_metadata and "missing_percentages" in column_metadata and column_name in column_metadata["missing_percentages"]:
+                    missing_pct = column_metadata["missing_percentages"].get(column_name, 0)
+                    column_data['Missing %'].append(f"{missing_pct:.2f}%")
+                else:
+                    # Fallback to directly calculating from DataFrame
+                    try:
+                        missing_pct = st.session_state.df[column_name].isna().mean() * 100 if column_name in st.session_state.df.columns else 0
+                        column_data['Missing %'].append(f"{missing_pct:.2f}%")
+                    except:
+                        column_data['Missing %'].append("N/A")
+                    
+                column_data['Confidence Score'].append(f"{get_confidence_indicator(confidence)} {confidence:.2%}")
+                column_data['Column Description'].append(col['description'])
 
-        # Display the dataframe
+        # Display the dataframe with filter stats
         column_df = pd.DataFrame(column_data)
+        if confidence_filter == "All Columns":
+            st.info(f"Showing all {len(column_df)} columns")
+        else:
+            total_columns = len(st.session_state.analysis['columns'])
+            st.info(f"Showing {len(column_df)} of {total_columns} columns matching filter: {confidence_filter}")
+        
         st.dataframe(column_df, use_container_width=True)
 
-        # Export Column Details
+        # Export Column Details - only export the filtered view
+        if confidence_filter == "All Columns":
+            export_filename = "column_details.csv"
+        else:
+            # Create a filename based on the filter
+            filter_key = confidence_filter.split(" ")[0]  # Get the emoji
+            export_filename = f"column_details_{filter_key}.csv"
+            
         st.download_button(
-            "Export Column Details (CSV)",
+            f"Export Filtered Columns ({len(column_df)} columns)",
             column_df.to_csv(index=False),
-            "column_details.csv",
+            export_filename,
             "text/csv"
         )
 
