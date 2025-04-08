@@ -44,22 +44,19 @@ def display_analysis():
         for col in st.session_state.analysis['columns']:
             column_name = col['name']
             confidence = col.get('confidence_score', 0)
-            confidence_numeric = confidence  # Store the raw numeric value for filtering
+            confidence_numeric = confidence  # Raw numeric value for filtering
             
-            # Get data type from stored metadata
-            if column_metadata and "dtypes" in column_metadata and column_name in column_metadata["dtypes"]:
-                dtype = column_metadata["dtypes"].get(column_name, "Unknown")
-            else:
-                dtype = "Unknown"
+            # Get data type from stored metadata if available
+            dtype = column_metadata.get("dtypes", {}).get(column_name, "Unknown")
             
-            # Get missing percentage from stored metadata
-            if column_metadata and "missing_percentages" in column_metadata and column_name in column_metadata["missing_percentages"]:
-                missing_pct = column_metadata["missing_percentages"].get(column_name, 0)
+            # Get missing percentage from stored metadata if available
+            if "missing_percentages" in column_metadata and column_name in column_metadata["missing_percentages"]:
+                missing_pct = column_metadata["missing_percentages"][column_name]
                 missing_pct_str = f"{missing_pct:.2f}%"
             else:
                 missing_pct_str = "N/A"
             
-            # Add to the list of dictionaries
+            # Append column details to the list
             columns_data.append({
                 'Column Name': column_name,
                 'Column Title': col['title'],
@@ -70,17 +67,17 @@ def display_analysis():
                 '_confidence_numeric': confidence_numeric  # Hidden column for filtering
             })
         
-        # Create DataFrame from the list of dictionaries
+        # Create a DataFrame from the list of dictionaries
         column_df = pd.DataFrame(columns_data)
         
-        # Add confidence filter using radio buttons
+        # Add a confidence filter using radio buttons in the main area
         confidence_filter = st.radio(
             "Filter by confidence level:",
             options=["All", "High confidence (>90%)", "Medium confidence (80-90%)", "Low confidence (<80%)"],
             horizontal=True
         )
         
-        # Apply confidence filter based on selection
+        # Apply confidence filter based on the selected option
         filtered_df = column_df.copy()
         if confidence_filter != "All":
             if confidence_filter == "High confidence (>90%)":
@@ -90,23 +87,23 @@ def display_analysis():
             elif confidence_filter == "Low confidence (<80%)":
                 filtered_df = column_df[column_df['_confidence_numeric'] < 0.8]
         
-        # Remove the hidden column used for filtering
+        # Remove the hidden column before display
         filtered_df = filtered_df.drop('_confidence_numeric', axis=1)
         
-        # Display filter results info
+        # Optionally display an info message if filtering has been applied
         if confidence_filter != "All":
             st.info(f"Showing {len(filtered_df)} columns with {confidence_filter}")
         
-        # Display the filtered dataframe
+        # Display the filtered DataFrame
         st.dataframe(filtered_df, use_container_width=True)
-
-        # Export Column Details (full dataset, without the hidden confidence column)
-        export_df = column_df.drop('_confidence_numeric', axis=1)
+        
+        # Export the filtered DataFrame as CSV
+        csv_data = filtered_df.to_csv(index=False).encode("utf-8")
         st.download_button(
-            "Export Column Details (CSV)",
-            export_df.to_csv(index=False),
-            "column_details.csv",
-            "text/csv"
+            label="Export Column Details (CSV)",
+            data=csv_data,
+            file_name="column_details.csv",
+            mime="text/csv"
         )
 
     # Key Observations
