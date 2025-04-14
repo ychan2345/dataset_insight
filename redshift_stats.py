@@ -6,6 +6,7 @@ import os
 import psycopg2
 from psycopg2 import sql
 from datetime import datetime
+import warnings
 
 # Custom JSON encoder for handling datetime/timestamp objects and other non-serializable types
 class DateTimeEncoder(json.JSONEncoder):
@@ -46,8 +47,10 @@ def get_redshift_column_stats(
         sample_size: Number of rows to sample for preview display
         
     Returns:
-        Dictionary containing column statistics and metadata
+        Dictionary containing column statistics and metadata in format compatible with utils.py
     """
+    # Suppress the pandas UserWarning about DBAPI connections
+    warnings.filterwarnings("ignore", message=".*other DBAPI2 objects are not tested.*")
     try:
         # Create psycopg2 connection
         conn = psycopg2.connect(**conn_params)
@@ -123,17 +126,19 @@ def get_redshift_column_stats(
                 missing_count = numeric_stats['missing_count'] 
                 missing_pct = (missing_count / row_count) * 100 if row_count > 0 else 0
                 
-                # Store in our stats dictionary
+                # Format to match utils.py expected format
                 stats[column_name] = {
                     "type": "numeric",
-                    "count": int(numeric_stats['count']),
                     "missing_count": int(missing_count),
                     "missing_pct": float(missing_pct),
-                    "mean": float(numeric_stats['mean']) if pd.notna(numeric_stats['mean']) else None,
-                    "median": float(numeric_stats['median']) if pd.notna(numeric_stats['median']) else None,
-                    "min": float(numeric_stats['min']) if pd.notna(numeric_stats['min']) else None,
-                    "max": float(numeric_stats['max']) if pd.notna(numeric_stats['max']) else None,
-                    "std": float(numeric_stats['std']) if pd.notna(numeric_stats['std']) else None
+                    "stats": {
+                        "count": int(numeric_stats['count']),
+                        "mean": float(numeric_stats['mean']) if pd.notna(numeric_stats['mean']) else None,
+                        "median": float(numeric_stats['median']) if pd.notna(numeric_stats['median']) else None,
+                        "min": float(numeric_stats['min']) if pd.notna(numeric_stats['min']) else None,
+                        "max": float(numeric_stats['max']) if pd.notna(numeric_stats['max']) else None,
+                        "std": float(numeric_stats['std']) if pd.notna(numeric_stats['std']) else None
+                    }
                 }
             
             elif data_type.startswith(('date', 'time', 'timestamp')):
@@ -168,14 +173,16 @@ def get_redshift_column_stats(
                 except (AttributeError, TypeError):
                     max_date_str = str(max_date) if pd.notna(max_date) else None
                 
-                # Store in our stats dictionary
+                # Format to match utils.py expected format
                 stats[column_name] = {
                     "type": "datetime",
-                    "count": int(datetime_stats['count']),
                     "missing_count": int(missing_count),
                     "missing_pct": float(missing_pct),
-                    "min": min_date_str,
-                    "max": max_date_str
+                    "stats": {
+                        "count": int(datetime_stats['count']),
+                        "min_date": min_date_str,
+                        "max_date": max_date_str
+                    }
                 }
             
             else:
@@ -195,6 +202,7 @@ def get_redshift_column_stats(
                 # Calculate missing percentage
                 missing_count = cat_stats['missing_count']
                 missing_pct = (missing_count / row_count) * 100 if row_count > 0 else 0
+                unique_count = cat_stats['unique_count']
                 
                 # Get top values (limited to 5 to avoid performance issues)
                 top_values_query = f"""
@@ -209,21 +217,29 @@ def get_redshift_column_stats(
                 top_values_df = pd.read_sql(top_values_query, conn)
                 
                 # Create value counts dictionary
-                value_counts = {}
+                distribution = {}
                 for i, row in top_values_df.iterrows():
                     # Convert to string for consistent JSON serialization
                     value = str(row['value']) if pd.notna(row['value']) else "null"
-                    value_counts[value] = int(row['count'])
+                    distribution[value] = int(row['count'])
                 
-                # Store in our stats dictionary
+                # Format to match utils.py expected format
                 stats[column_name] = {
                     "type": "categorical",
-                    "count": int(cat_stats['count']),
                     "missing_count": int(missing_count),
                     "missing_pct": float(missing_pct),
-                    "unique_count": int(cat_stats['unique_count']),
-                    "value_counts": value_counts
+                    "total_unique": int(unique_count),
+                    "distribution": distribution
                 }
+                
+                # Check if there are too many unique values 
+                if unique_count > 50:
+                    stats[column_name]["truncated"] = True
+                    # Include message for columns with too many unique values (helps with prompt formatting)
+                    if unique_count > 1000:
+                        stats[column_name]["message"] = f"High cardinality ({unique_count} unique values)"
+                    else:
+                        stats[column_name]["message"] = f"Multiple values ({unique_count} unique)"
         
         except Exception as e:
             # If we fail to get statistics for a column, log the error and include basic info
@@ -253,6 +269,7 @@ def create_redshift_summary_df(
 ) -> pd.DataFrame:
     """
     Create a summary DataFrame for a Redshift table with metadata and statistics.
+    Format matches the expected format for prepare_gpt_prompt in utils.py.
     
     Args:
         conn_params: Dictionary with psycopg2 connection parameters (host, port, dbname, user, password)
@@ -263,6 +280,8 @@ def create_redshift_summary_df(
     Returns:
         DataFrame with table metadata, summary statistics, and sample data
     """
+    # Suppress the pandas UserWarning about DBAPI connections
+    warnings.filterwarnings("ignore", message=".*other DBAPI2 objects are not tested.*")
     try:
         # Get statistics using the Redshift-optimized function
         stats = get_redshift_column_stats(
@@ -272,16 +291,22 @@ def create_redshift_summary_df(
             sample_size=sample_size
         )
         
-        # Create a new dataframe for summary information
+        # Format structure in the way utils.py expects it
+        structure = {
+            "columns": [col for col in stats.keys() if col != "_metadata" and not col.startswith("_")],
+            "shape": (stats["_metadata"]["total_rows"], stats["_metadata"]["total_columns"])
+        }
+        
+        # Create a new dataframe for summary information (column names match what utils.py expects)
         summary_data = {
-            "table_name": [table_name],
-            "schema_name": [schema_name],
-            "rows": [stats["_metadata"]["total_rows"]],
-            "columns": [stats["_metadata"]["total_columns"]],
-            "data_size_mb": [None],  # Could use SVV_TABLE_INFO but requires special permissions
-            "created_at": [stats["_metadata"]["created_at"]],
-            "stats_json": [json.dumps(stats, cls=DateTimeEncoder)],
-            "stats_dict": [stats]  # Keep the original dictionary for easy access
+            "Table Name": [table_name],
+            "Schema": [schema_name],
+            "Total Rows": [stats["_metadata"]["total_rows"]],
+            "Total Columns": [stats["_metadata"]["total_columns"]],
+            "Size (MB)": [None],  # Could use SVV_TABLE_INFO but requires special permissions
+            "Created At": [stats["_metadata"]["created_at"]],
+            "Summary Info": [json.dumps(stats, cls=DateTimeEncoder)],
+            "structure": [structure]  # Structure info in the format expected by prepare_gpt_prompt
         }
         
         # Create summary dataframe
@@ -294,7 +319,7 @@ def create_redshift_summary_df(
         conn.close()
             
         # Add sample to the summary dataframe
-        summary_df["sample_df"] = [sample_df]
+        summary_df["Sample Data"] = [sample_df]
         
         return summary_df
         
