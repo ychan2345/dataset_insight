@@ -401,21 +401,41 @@ Make sure your response contains only the JSON object with the columns key."""
         # Create simplified column details to reduce prompt size
         column_details = []
         for col in columns_batch:
-            info = stats.get(col, {})
-            if info.get('type') == 'datetime':
-                # Handle datetime columns
-                min_date = info['stats'].get('min_date', 'None')
-                max_date = info['stats'].get('max_date', 'None')
-                details = f"- {col}: datetime range={min_date} to {max_date}, missing={info.get('missing_pct', 0)}%"
-            elif 'stats' in info and 'mean' in info['stats']:
-                # More concise numeric stats with null handling
-                mean_val = info['stats'].get('mean')
-                mean_str = str(mean_val) if mean_val is not None else "None"
-                details = f"- {col}: mean={mean_str}, missing={info.get('missing_pct', 0)}%"
-            else:
-                # Simplified categorical data
-                details = f"- {col}: categorical, missing={info.get('missing_pct', 0)}%"
-            column_details.append(details)
+            try:
+                info = stats.get(col, {})
+                
+                # Skip if info is not a dictionary (could be a list or other type)
+                if not isinstance(info, dict):
+                    details = f"- {col}: unknown type, could not extract stats"
+                    column_details.append(details)
+                    continue
+                    
+                if info.get('type') == 'datetime':
+                    # Handle datetime columns
+                    stats_dict = info.get('stats', {})
+                    if isinstance(stats_dict, dict):
+                        min_date = stats_dict.get('min_date', 'None')
+                        max_date = stats_dict.get('max_date', 'None')
+                    else:
+                        min_date = max_date = 'None'
+                    missing_pct = info.get('missing_pct', 0)
+                    details = f"- {col}: datetime range={min_date} to {max_date}, missing={missing_pct}%"
+                elif 'stats' in info and isinstance(info['stats'], dict) and 'mean' in info['stats']:
+                    # More concise numeric stats with null handling
+                    mean_val = info['stats'].get('mean')
+                    mean_str = str(mean_val) if mean_val is not None else "None"
+                    missing_pct = info.get('missing_pct', 0)
+                    details = f"- {col}: mean={mean_str}, missing={missing_pct}%"
+                else:
+                    # Simplified categorical data
+                    missing_pct = info.get('missing_pct', 0)
+                    details = f"- {col}: categorical, missing={missing_pct}%"
+                column_details.append(details)
+            except Exception as e:
+                # Fallback for any column that causes issues
+                print(f"Error processing column {col}: {str(e)}")
+                details = f"- {col}: error processing column stats"
+                column_details.append(details)
 
         # Generate a table name from available data sources
         # First try to get from summary_df if available
