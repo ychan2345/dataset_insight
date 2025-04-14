@@ -1,10 +1,13 @@
 import pandas as pd
 import numpy as np
-from typing import Dict, Any, Tuple
+import os
+import random
+from typing import Dict, Any, Tuple, List
 import json
-from langchain.chat_models import AzureChatOpenAI
-from langchain.schema import HumanMessage, SystemMessage
+from langchain_openai import ChatOpenAI
 from langchain.prompts import ChatPromptTemplate
+from langchain.schema import HumanMessage, SystemMessage
+from column_stats import get_column_stats, get_chunked_column_stats, merge_chunk_stats
 
 def prepare_gpt_prompt(stats: Dict[str, Any], summary_df=None) -> str:
     """Prepare the prompt for GPT-4 analysis.
@@ -458,15 +461,13 @@ def get_gpt_analysis(stats: Dict[str, Any], api_key: str,
         # Initialize OpenAI chat model (using gpt-4o, the newest model)
         # the newest OpenAI model is "gpt-4o" which was released May 13, 2024.
         # do not change this unless explicitly requested by the user
-        chat = AzureChatOpenAI(
-                openai_api_key=api_key,
-                azure_endpoint=endpoint,
-                #deployment_name=deployment_name,
-                openai_api_version="2024-10-21",
-                temperature=0.5,
-                max_tokens=1500,
-                response_format={"type": "json_object"} # Ensure we get JSON responses
-            )
+        chat = ChatOpenAI(
+            api_key=api_key,
+            model="gpt-4o",  
+            temperature=0.5,
+            max_tokens=1500,  # Increased from 800 to handle larger datasets
+            response_format={"type": "json_object"} # Ensure we get JSON responses
+        )
 
         # Step 1: Get general dataset overview (no detailed column analysis)
         overview_prompt = prepare_overview_prompt(stats, summary_df)
@@ -615,22 +616,144 @@ def get_gpt_analysis(stats: Dict[str, Any], api_key: str,
             "key_observations": ["Error: Could not generate observations"]
         }
 
-def process_file_path(file_path: str, api_key: str, endpoint: str) -> Tuple[pd.DataFrame, Dict[str, Any], Dict[str, Any], str]:
-    """Process a CSV file from a file path and return dataframe, stats, analysis, and the prompt."""
-    try:
-        # Load and validate the dataframe
-        df = pd.read_csv(file_path)
-        if df.empty:
-            raise ValueError("The CSV file is empty")
-        if len(df.columns) == 0:
-            raise ValueError("No columns to parse from file")
-
-        # Generate statistics for the data
-        stats = get_column_stats(df)
+def process_uploaded_file(uploaded_file, api_key: str, endpoint: str, 
+                      max_memory_size: int = 100000, use_chunking: bool = True) -> Tuple[pd.DataFrame, Dict[str, Any], Dict[str, Any], str]:
+    """Process the uploaded CSV file and return dataframe, stats, analysis, and the prompt.
+    
+    Args:
+        uploaded_file: Streamlit UploadedFile object
+        api_key: OpenAI API key
+        endpoint: API endpoint (for Azure OpenAI)
+        max_memory_size: Maximum number of rows to use in chunking
+        use_chunking: Whether to use chunking for large datasets
         
-        # Use the summary_df if it's available in session state
+    Returns:
+        Tuple of (dataframe, stats, analysis, prompt)
+    """
+    try:
+        import tempfile
         import streamlit as st
-        summary_df = st.session_state.get('summary_df')
+        
+        # For larger files, save to a temporary file first to allow chunked reading
+        with tempfile.NamedTemporaryFile(delete=False, suffix='.csv') as tmp_file:
+            # Write the uploaded file to a temporary location
+            tmp_file.write(uploaded_file.getvalue())
+            tmp_file_path = tmp_file.name
+        
+        # Check the file size to determine processing approach
+        file_size = os.path.getsize(tmp_file_path)
+        file_size_mb = file_size / (1024 * 1024)  # Convert to MB
+        
+        print(f"Processing uploaded file: {uploaded_file.name}")
+        print(f"File size: {file_size_mb:.2f} MB")
+        
+        # For very large files, use the large file processor
+        if file_size_mb > 1000:  # Files larger than 1GB
+            print("Very large file detected (>1GB), using optimized processing")
+            # Import the large file processor here to avoid circular imports
+            from large_file_processor import process_large_file
+            return process_large_file(tmp_file_path, api_key, endpoint, max_memory_size, use_chunking)
+        
+        # For moderately large files, use chunking
+        elif file_size_mb > 100:  # Files larger than 100MB
+            print(f"Large file detected ({file_size_mb:.2f} MB), using chunked processing")
+            # Load the CSV file
+            df = pd.read_csv(tmp_file_path)
+            if df.empty:
+                raise ValueError("The uploaded CSV file is empty")
+            
+            # Generate column stats using chunking
+            stats = get_column_stats(df, sample_size=max_memory_size, use_chunking=use_chunking)
+            
+            # Use the summary_df if it's available in session state
+            summary_df = st.session_state.get('summary_df')
+        
+        # For standard size files, use the regular approach
+        else:
+            # Load and validate the dataframe
+            df = pd.read_csv(uploaded_file)
+            if df.empty:
+                raise ValueError("The uploaded CSV file is empty")
+
+            # Generate statistics for the data without chunking
+            stats = get_column_stats(df)
+            
+            # Use the summary_df if it's available in session state
+            summary_df = st.session_state.get('summary_df')
+        
+        # Get the prompt using summary_df if available
+        prompt = prepare_gpt_prompt(stats, summary_df)
+        
+        # Get the analysis using summary_df if available
+        analysis = get_gpt_analysis(stats, api_key, endpoint, summary_df)
+        
+        return df, stats, analysis, prompt  # Return the prompt along with other data
+    except Exception as e:
+        raise Exception(f"Error processing file: {str(e)}")
+
+def process_file_path(file_path: str, api_key: str, endpoint: str, 
+                  max_memory_size: int = 100000, use_chunking: bool = True) -> Tuple[pd.DataFrame, Dict[str, Any], Dict[str, Any], str]:
+    """Process a CSV file from a file path and return dataframe, stats, analysis, and the prompt.
+    
+    Args:
+        file_path: Path to the CSV file
+        api_key: OpenAI API key
+        endpoint: API endpoint (for Azure OpenAI)
+        max_memory_size: Maximum number of rows to load into memory at once
+        use_chunking: Whether to use chunking for very large files
+        
+    Returns:
+        Tuple of (dataframe, stats, analysis, prompt)
+    """
+    try:
+        # First check file size to determine loading strategy
+        file_size = os.path.getsize(file_path)
+        file_size_mb = file_size / (1024 * 1024)  # Convert to MB
+        
+        print(f"Processing file: {file_path}")
+        print(f"File size: {file_size_mb:.2f} MB")
+        
+        # For very large files, we need a different approach
+        if file_size_mb > 1000:  # Files larger than 1GB
+            print("Very large file detected (>1GB), using optimized processing")
+            # Import the large file processor here to avoid circular imports
+            from large_file_processor import process_large_file
+            return process_large_file(file_path, api_key, endpoint, max_memory_size, use_chunking)
+        
+        # For moderately large files, use chunking but still load the full DataFrame
+        elif file_size_mb > 100:  # Files larger than 100MB
+            print(f"Large file detected ({file_size_mb:.2f} MB), using chunked processing")
+            
+            # Load the CSV file
+            df = pd.read_csv(file_path)
+            if df.empty:
+                raise ValueError("The CSV file is empty")
+            if len(df.columns) == 0:
+                raise ValueError("No columns to parse from file")
+            
+            # Generate column stats using chunking
+            stats = get_column_stats(df, sample_size=max_memory_size, use_chunking=use_chunking)
+            
+            # Use the summary_df if it's available in session state
+            import streamlit as st
+            summary_df = st.session_state.get('summary_df')
+        
+        # For smaller files, use standard processing
+        else:
+            print(f"Standard file size ({file_size_mb:.2f} MB), using normal processing")
+            # Load the CSV file
+            df = pd.read_csv(file_path)
+            if df.empty:
+                raise ValueError("The CSV file is empty")
+            if len(df.columns) == 0:
+                raise ValueError("No columns to parse from file")
+            
+            # Generate statistics for the data
+            stats = get_column_stats(df)
+            
+            # Use the summary_df if it's available in session state
+            import streamlit as st
+            summary_df = st.session_state.get('summary_df')
         
         # For large datasets, prepare an overview prompt
         # We'll store this for UI display, but use the batched approach for actual analysis
