@@ -7,6 +7,26 @@ import psycopg2
 from psycopg2 import sql
 from datetime import datetime
 
+# Custom JSON encoder for handling datetime/timestamp objects and other non-serializable types
+class DateTimeEncoder(json.JSONEncoder):
+    def default(self, o):
+        if isinstance(o, (datetime, pd.Timestamp)):
+            return o.isoformat()
+        elif isinstance(o, np.integer):
+            return int(o)
+        elif isinstance(o, np.floating):
+            return float(o)
+        elif isinstance(o, np.ndarray):
+            return o.tolist()
+        elif isinstance(o, (np.bool_)):
+            return bool(o)
+        elif pd.isna(o):
+            return None
+        try:
+            return super().default(o)
+        except TypeError:
+            return str(o)  # Last resort: convert to string
+
 def get_redshift_column_stats(
     conn_params: Dict[str, Any],
     table_name: str,
@@ -137,8 +157,16 @@ def get_redshift_column_stats(
                 # Convert date objects to strings for JSON compatibility
                 min_date = datetime_stats['min_date']
                 max_date = datetime_stats['max_date']
-                min_date_str = min_date.isoformat() if pd.notna(min_date) else None
-                max_date_str = max_date.isoformat() if pd.notna(max_date) else None
+                # Safely convert to string, handling various datetime types
+                try:
+                    min_date_str = min_date.isoformat() if pd.notna(min_date) else None
+                except (AttributeError, TypeError):
+                    min_date_str = str(min_date) if pd.notna(min_date) else None
+                    
+                try:
+                    max_date_str = max_date.isoformat() if pd.notna(max_date) else None
+                except (AttributeError, TypeError):
+                    max_date_str = str(max_date) if pd.notna(max_date) else None
                 
                 # Store in our stats dictionary
                 stats[column_name] = {
@@ -207,8 +235,10 @@ def get_redshift_column_stats(
                 "missing_pct": None
             }
     
-    # Add sample data for preview
-    stats["_sample_data"] = sample_df.to_dict(orient="records")
+    # Add sample data for preview - convert properly to handle timestamps and other special types
+    # First convert to JSON with our custom encoder, then back to Python objects
+    sample_json = json.dumps(sample_df.to_dict(orient="records"), cls=DateTimeEncoder)
+    stats["_sample_data"] = json.loads(sample_json)
     
     # Close the connection
     conn.close()
@@ -250,7 +280,7 @@ def create_redshift_summary_df(
             "columns": [stats["_metadata"]["total_columns"]],
             "data_size_mb": [None],  # Could use SVV_TABLE_INFO but requires special permissions
             "created_at": [stats["_metadata"]["created_at"]],
-            "stats_json": [json.dumps(stats)],
+            "stats_json": [json.dumps(stats, cls=DateTimeEncoder)],
             "stats_dict": [stats]  # Keep the original dictionary for easy access
         }
         
