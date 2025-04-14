@@ -297,6 +297,12 @@ def create_redshift_summary_df(
             "shape": (stats["_metadata"]["total_rows"], stats["_metadata"]["total_columns"])
         }
         
+        # Filter out metadata entries from stats
+        filtered_stats = {}
+        for key, value in stats.items():
+            if not key.startswith('_'):
+                filtered_stats[key] = value
+        
         # Create a new dataframe for summary information (column names match what utils.py expects)
         summary_data = {
             "Table Name": [table_name],
@@ -305,7 +311,7 @@ def create_redshift_summary_df(
             "Total Columns": [stats["_metadata"]["total_columns"]],
             "Size (MB)": [None],  # Could use SVV_TABLE_INFO but requires special permissions
             "Created At": [stats["_metadata"]["created_at"]],
-            "Summary Info": [json.dumps(stats, cls=DateTimeEncoder)],
+            "Summary Info": [json.dumps(filtered_stats, cls=DateTimeEncoder)],  # Only include column stats, not metadata
             "structure": [structure]  # Structure info in the format expected by prepare_gpt_prompt
         }
         
