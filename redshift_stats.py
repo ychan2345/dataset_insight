@@ -333,6 +333,31 @@ def create_redshift_summary_df(
         # This data was already retrieved in get_redshift_column_stats
         sample_df = pd.DataFrame(stats["_sample_data"])
         
+        # Create column metadata dictionary similar to what's in summary.py
+        column_dtypes = {}
+        missing_percentages = {}
+        
+        # Extract data types and missing percentages for each column
+        for col_name, col_info in filtered_stats.items():
+            # Get data type
+            if col_info.get('type') == 'numeric':
+                col_dtype = 'float64'
+            elif col_info.get('type') == 'datetime':
+                col_dtype = 'datetime64[ns]'
+            elif col_info.get('type') == 'categorical':
+                col_dtype = 'object'
+            else:
+                col_dtype = 'unknown'
+            
+            column_dtypes[col_name] = col_dtype
+            missing_percentages[col_name] = col_info.get('missing_pct', 0)
+            
+        # Create column metadata JSON similar to summary.py
+        column_metadata_json = json.dumps({
+            "dtypes": column_dtypes,
+            "missing_percentages": missing_percentages
+        }, cls=DateTimeEncoder)
+        
         # Create a new dataframe for summary information (column names match what utils.py expects)
         summary_data = {
             "Table Name": [table_name],
@@ -346,6 +371,7 @@ def create_redshift_summary_df(
             "Size (MB)": [None],  # Could use SVV_TABLE_INFO but requires special permissions
             "Created At": [stats["_metadata"]["created_at"]],
             "Summary Info": [json.dumps(filtered_stats, cls=DateTimeEncoder)],  # Only include column stats, not metadata
+            "Column Metadata": [column_metadata_json],  # Add column metadata similar to summary.py
             "structure": [structure],  # Structure info in the format expected by prepare_gpt_prompt
             "Sample Data": [sample_df]  # Add the sample data as a DataFrame
         }
