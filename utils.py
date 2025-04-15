@@ -122,6 +122,10 @@ Make sure your response contains only the JSON object with the keys specified ab
     # If summary_df was not provided or failed to parse, use the stats dict directly
     if summary_df is None or not column_details:
         for col, info in stats.items():
+            # Skip metadata keys that start with underscore
+            if col.startswith("_"):
+                continue
+                
             # Add missing percentage for all columns
             missing_pct = info.get('missing_pct', 0)
             missing_info = f", missing={missing_pct}%" if missing_pct > 0 else ""
@@ -374,8 +378,10 @@ Return your response strictly as a valid JSON object using the following format:
 
 Make sure your response contains only the JSON object with the columns key."""
 
+        # Filter columns_batch to exclude any metadata columns starting with underscore
+        filtered_columns_batch = [col for col in columns_batch if not col.startswith('_')]
         # Just list column names without stats to save space
-        column_names = ", ".join(columns_batch)
+        column_names = ", ".join(filtered_columns_batch)
         
         # Generate a table name from available data sources
         # First try to get from summary_df if available
@@ -383,8 +389,8 @@ Make sure your response contains only the JSON object with the columns key."""
             table_name = summary_df.iloc[0]['table_name']
         # If no summary_df, try to infer from column names in stats
         elif len(stats) > 1:  # Ensure there's at least one column besides _metadata
-            # Get first column name (excluding _metadata)
-            all_column_names = [col for col in stats.keys() if col != '_metadata']
+            # Get first column name (excluding any metadata entries)
+            all_column_names = [col for col in stats.keys() if not col.startswith('_')]
             if all_column_names and all_column_names[0].startswith('col_'):
                 table_name = "dataset"
             elif all_column_names and any(keyword in all_column_names[0].lower() for keyword in ["id", "key", "name"]):
@@ -434,6 +440,10 @@ Make sure your response contains only the JSON object with the columns key."""
         # Create simplified column details to reduce prompt size
         column_details = []
         for col in columns_batch:
+            # Skip metadata keys that start with underscore
+            if col.startswith("_"):
+                continue
+                
             try:
                 info = stats.get(col, {})
                 
@@ -544,8 +554,8 @@ def get_gpt_analysis(stats: Dict[str, Any], api_key: str,
             key_observations = ["Error: Could not generate observations"]
         
         # Step 2: Process columns in batches with dynamic sizing
-        # Get columns from stats dictionary (excluding _metadata)
-        all_columns = [col for col in stats.keys() if col != '_metadata']
+        # Get columns from stats dictionary (excluding all metadata entries starting with underscore)
+        all_columns = [col for col in stats.keys() if not col.startswith('_')]
         all_column_details = []
         
         # Get total columns count from metadata if available
@@ -618,6 +628,9 @@ def get_gpt_analysis(stats: Dict[str, Any], api_key: str,
                     # Create a fallback analysis for the columns in this batch
                     fallback_columns = []
                     for col in columns_batch:
+                        # Skip metadata columns
+                        if col.startswith('_'):
+                            continue
                         fallback_columns.append({
                             "name": col,
                             "title": f"Data column {col}",
