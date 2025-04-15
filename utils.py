@@ -23,6 +23,10 @@ Dataset Information:
 Table Name: {table_name}
 Total Rows: {rows}
 Total Columns: {columns}
+Numeric Columns: {numeric_cols}
+Categorical Columns: {categorical_cols}
+Datetime Columns: {datetime_cols}
+Other Columns: {other_cols}
 
 Summary Information:
 ---------------------
@@ -161,11 +165,40 @@ Make sure your response contains only the JSON object with the keys specified ab
             columns = stats['_metadata'].get('total_columns', 0)
         # Otherwise use default values (should have been extracted from summary_df if available)
     
+    # Initialize column type counts
+    numeric_cols = 0
+    categorical_cols = 0
+    datetime_cols = 0
+    other_cols = 0
+    
+    # Try to get column type counts from summary_df
+    if summary_df is not None:
+        try:
+            # Check if the new column type count columns are present
+            if "Numeric Columns" in summary_df.columns:
+                numeric_cols = summary_df["Numeric Columns"].iloc[0]
+                categorical_cols = summary_df["Categorical Columns"].iloc[0]
+                datetime_cols = summary_df["Datetime Columns"].iloc[0]
+                other_cols = summary_df["Other Columns"].iloc[0]
+        except (KeyError, IndexError, AttributeError):
+            pass
+    
+    # If not found in summary_df, try to get from stats metadata
+    if numeric_cols == 0 and '_metadata' in stats:
+        numeric_cols = stats['_metadata'].get('numeric_columns', 0)
+        categorical_cols = stats['_metadata'].get('categorical_columns', 0)
+        datetime_cols = stats['_metadata'].get('datetime_columns', 0)
+        other_cols = stats['_metadata'].get('other_columns', 0)
+        
     # Format the prompt with the collected values
     formatted_prompt = prompt.format(
         table_name=table_name,
         rows=rows,
         columns=columns,
+        numeric_cols=numeric_cols,
+        categorical_cols=categorical_cols,
+        datetime_cols=datetime_cols,
+        other_cols=other_cols,
         column_info="\n".join(column_details)
     )
 
