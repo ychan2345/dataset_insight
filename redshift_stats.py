@@ -32,7 +32,8 @@ def get_redshift_column_stats(
     conn_params: Dict[str, Any],
     table_name: str,
     schema_name: str = "public",
-    sample_size: int = 10000
+    sample_size: int = 5,
+    columns: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
     Generate statistics for each column in a Redshift table using native SQL aggregation.
@@ -60,19 +61,34 @@ def get_redshift_column_stats(
         # Get column information from information_schema
         column_query = f"""
             SELECT column_name, data_type
-            FROM information_schema.columns
+            FROM SVV_COLUMNS
             WHERE table_schema = '{schema_name}' AND table_name = '{table_name}'
             ORDER BY ordinal_position
         """
         columns_df = pd.read_sql(column_query, conn)
+
+        # If the user passed a list of columns, filter down to just those
+        if columns:
+        # sanity check: make sure they exist
+            missing = set(columns) - set(columns_df['column_name'])
+            if missing:
+                raise ValueError(f"Columns not found in {schema_name}.{table_name}: {missing}")
+            columns_df = columns_df[columns_df['column_name'].isin(columns)].reset_index(drop=True)
         
         # Count total rows
         count_query = f'SELECT COUNT(*) AS row_count FROM "{schema_name}"."{table_name}"'
         row_count_df = pd.read_sql(count_query, conn)
         row_count = row_count_df.iloc[0]['row_count']
-        
-        # Get a sample for display purposes
-        sample_query = f'SELECT * FROM "{schema_name}"."{table_name}" ORDER BY RANDOM() LIMIT {sample_size}'
+
+        # Build the SELECT-list for sampling
+        if columns_df.empty:
+            raise ValueError("No columns to sample after filtering!")
+        select_list = ', '.join(f'"{c}"' for c in columns_df['column_name'])
+
+        # Get a sample for display purposes, only those cols
+        sample_query = (
+            f'SELECT * FROM "{schema_name}"."{table_name}" LIMIT 5'
+        )
         sample_df = pd.read_sql(sample_query, conn)
     
     except Exception as e:
@@ -329,55 +345,29 @@ def create_redshift_summary_df(
             if not key.startswith('_'):
                 filtered_stats[key] = value
         
-        # Convert the _sample_data from stats back to a DataFrame 
-        # This data was already retrieved in get_redshift_column_stats
-        sample_df = pd.DataFrame(stats["_sample_data"])
-        
-        # Create column metadata dictionary similar to what's in summary.py
-        column_dtypes = {}
-        missing_percentages = {}
-        
-        # Extract data types and missing percentages for each column
-        for col_name, col_info in filtered_stats.items():
-            # Get data type
-            if col_info.get('type') == 'numeric':
-                col_dtype = 'float64'
-            elif col_info.get('type') == 'datetime':
-                col_dtype = 'datetime64[ns]'
-            elif col_info.get('type') == 'categorical':
-                col_dtype = 'object'
-            else:
-                col_dtype = 'unknown'
-            
-            column_dtypes[col_name] = col_dtype
-            missing_percentages[col_name] = col_info.get('missing_pct', 0)
-            
-        # Create column metadata JSON similar to summary.py
-        column_metadata_json = json.dumps({
-            "dtypes": column_dtypes,
-            "missing_percentages": missing_percentages
-        }, cls=DateTimeEncoder)
-        
         # Create a new dataframe for summary information (column names match what utils.py expects)
         summary_data = {
             "Table Name": [table_name],
             "Schema": [schema_name],
             "Total Rows": [stats["_metadata"]["total_rows"]],
             "Total Columns": [stats["_metadata"]["total_columns"]],
-            "Numeric Columns": [stats["_metadata"]["numeric_columns"]],
-            "Categorical Columns": [stats["_metadata"]["categorical_columns"]],
-            "Datetime Columns": [stats["_metadata"]["datetime_columns"]],
-            "Other Columns": [stats["_metadata"]["other_columns"]],
             "Size (MB)": [None],  # Could use SVV_TABLE_INFO but requires special permissions
             "Created At": [stats["_metadata"]["created_at"]],
             "Summary Info": [json.dumps(filtered_stats, cls=DateTimeEncoder)],  # Only include column stats, not metadata
-            "Column Metadata": [column_metadata_json],  # Add column metadata similar to summary.py
-            "structure": [structure],  # Structure info in the format expected by prepare_gpt_prompt
-            "Sample Data": [sample_df]  # Add the sample data as a DataFrame
+            "structure": [structure]  # Structure info in the format expected by prepare_gpt_prompt
         }
         
         # Create summary dataframe
         summary_df = pd.DataFrame(summary_data)
+        
+        # Extract a sample for display
+        conn = psycopg2.connect(**conn_params)
+        sample_query = f'SELECT * FROM "{schema_name}"."{table_name}" ORDER BY RANDOM() LIMIT {sample_size}'
+        sample_df = pd.read_sql(sample_query, conn)
+        conn.close()
+            
+        # Add sample to the summary dataframe
+        summary_df["Sample Data"] = [sample_df]
         
         return summary_df
         
